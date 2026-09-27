@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { supabase } from "./supabaseClient";
 import {
   Play,
@@ -18,7 +18,35 @@ import {
   Clapperboard,
   Music2,
   Settings2,
+  Sun,
+  Moon,
+  Bell,
+  BellOff,
+  Zap,
+  TrendingUp,
+  Clock,
+  Send,
 } from "lucide-react";
+import {
+  isNotificationSupported,
+  getNotificationPermission,
+  requestNotificationPermission,
+  setAppBadge,
+} from "./notifications";
+import {
+  runAutomation,
+  getUpcomingDeadlines,
+  buildBulkReminderMessages,
+  getMonthlyRevenue,
+  cleanOldNotificationLog,
+} from "./automation";
+import {
+  loadTemplates,
+  saveTemplates,
+  fillTemplate,
+  detectReminders,
+  buildWhatsAppUrl,
+} from "./templates";
 
 function daysUntil(dateStr) {
   const today = new Date();
@@ -38,12 +66,12 @@ function statusOf(sub) {
 
 const STATUS_LABEL = { ok: "Actif", soon: "Échéance proche", expired: "Expiré", blocked: "Bloqué" };
 const STATUS_STYLE = {
-  ok: "bg-emerald-500/10 text-emerald-400 border-emerald-500/30",
-  soon: "bg-amber-500/10 text-amber-400 border-amber-500/30",
-  expired: "bg-red-500/10 text-red-400 border-red-500/30",
-  blocked: "bg-gray-500/10 text-gray-400 border-gray-500/30",
+  ok: "bg-emerald-500/10 text-success border-emerald-500/30",
+  soon: "bg-amber-500/10 text-warning border-amber-500/30",
+  expired: "bg-red-500/10 text-danger border-red-500/30",
+  blocked: "bg-gray-500/10 text-neutral border-gray-500/30",
 };
-const STATUS_DOT = { ok: "bg-emerald-400", soon: "bg-amber-400", expired: "bg-red-400", blocked: "bg-gray-400" };
+const STATUS_DOT = { ok: "bg-dot-success", soon: "bg-dot-warning", expired: "bg-dot-danger", blocked: "bg-dot-neutral" };
 
 function formatDate(dateStr) {
   if (!dateStr) return "-";
@@ -94,13 +122,31 @@ const DEFAULT_ACCOUNTS = [
 ];
 
 const inputCls =
-  "w-full text-sm bg-gray-800 border border-gray-700 rounded px-2 py-1.5 text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500";
+  "w-full text-sm bg-input-bg border border-input-border rounded px-2 py-1.5 text-input-text placeholder-muted focus:outline-none focus:ring-1 focus:ring-input-border";
 const btnGhost =
-  "inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded border border-gray-700 text-gray-300 hover:bg-gray-800";
+  "inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded border border-input-border text-secondary hover:bg-hover";
 
 export default function App() {
   const [session, setSession] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [theme, setTheme] = useState(() => {
+    try {
+      const saved = localStorage.getItem("streamdesk-theme");
+      if (saved === "light" || saved === "dark") return saved;
+    } catch {}
+    return "dark";
+  });
+
+  function toggleTheme() {
+    setTheme((t) => (t === "dark" ? "light" : "dark"));
+  }
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    try {
+      localStorage.setItem("streamdesk-theme", theme);
+    } catch {}
+  }, [theme]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -112,22 +158,15 @@ export default function App() {
   }, []);
 
   if (authLoading) {
-    return <div className="min-h-screen bg-gray-950 flex items-center justify-center text-gray-500 text-sm">Chargement...</div>;
+    return <div className="min-h-screen bg-base flex items-center justify-center text-muted text-sm">Chargement...</div>;
   }
 
-  return session ? <Dashboard /> : <Login />;
+  return session ? <Dashboard theme={theme} toggleTheme={toggleTheme} /> : <Login />;
 }
 
 function Logo({ size = 36 }) {
   return (
-    <div
-      className="rounded-xl flex items-center justify-center shrink-0"
-      style={{
-        width: size,
-        height: size,
-        background: "linear-gradient(135deg, #dc2626 0%, #16a34a 100%)",
-      }}
-    >
+    <div className="rounded-xl flex items-center justify-center shrink-0 bg-brand-gradient" style={{ width: size, height: size }}>
       <Play size={size * 0.5} className="text-white" fill="white" />
     </div>
   );
@@ -166,30 +205,25 @@ function Login() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-950 px-4">
+    <div className="min-h-screen flex items-center justify-center bg-base px-4">
       <div className="w-full max-w-sm">
         <div className="flex flex-col items-center mb-6">
           <Logo size={48} />
-          <h1 className="text-xl font-semibold text-gray-50 text-center mt-3">StreamDesk</h1>
-          <p className="text-sm text-gray-500 text-center mt-0.5">Gestion de vos abonnements Netflix &amp; Spotify</p>
+          <h1 className="text-xl font-semibold text-primary text-center mt-3">StreamDesk</h1>
+          <p className="text-sm text-muted text-center mt-0.5">Gestion de vos abonnements Netflix &amp; Spotify</p>
         </div>
-        <form onSubmit={handleSubmit} className="bg-gray-900 border border-gray-800 rounded-lg p-5 space-y-3">
+        <form onSubmit={handleSubmit} className="bg-card border border-line rounded-lg p-5 space-y-3">
           <div>
-            <label className="block text-xs text-gray-500 mb-1">Identifiant (email)</label>
+            <label className="block text-xs text-muted mb-1">Identifiant (email)</label>
             <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className={inputCls} placeholder="vous@exemple.com" />
           </div>
           <div>
-            <label className="block text-xs text-gray-500 mb-1">Mot de passe</label>
+            <label className="block text-xs text-muted mb-1">Mot de passe</label>
             <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className={inputCls} placeholder="Au moins 6 caractères" />
           </div>
-          {error && <div className="text-xs text-red-400">{error}</div>}
-          {info && <div className="text-xs text-emerald-400">{info}</div>}
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full text-sm px-3 py-2 rounded text-white font-medium disabled:opacity-50"
-            style={{ background: "linear-gradient(135deg, #dc2626 0%, #16a34a 100%)" }}
-          >
+          {error && <div className="text-xs text-danger">{error}</div>}
+          {info && <div className="text-xs text-success">{info}</div>}
+          <button type="submit" disabled={loading} className="w-full text-sm px-3 py-2 rounded text-white font-medium disabled:opacity-50 bg-brand-gradient">
             {loading ? "Patientez..." : mode === "signin" ? "Se connecter" : "Créer mon compte"}
           </button>
         </form>
@@ -199,7 +233,7 @@ function Login() {
             setError("");
             setInfo("");
           }}
-          className="w-full text-xs text-gray-500 mt-3 hover:text-gray-300"
+          className="w-full text-xs text-muted mt-3 hover:text-secondary"
         >
           {mode === "signin" ? "Pas encore de compte ? En créer un" : "Déjà un compte ? Se connecter"}
         </button>
@@ -208,7 +242,7 @@ function Login() {
   );
 }
 
-function Dashboard() {
+function Dashboard({ theme, toggleTheme }) {
   const [accounts, setAccounts] = useState([]);
   const [subs, setSubs] = useState([]);
   const [loaded, setLoaded] = useState(false);
@@ -220,6 +254,20 @@ function Dashboard() {
   const [loadError, setLoadError] = useState("");
   const [search, setSearch] = useState("");
   const [openAccountId, setOpenAccountId] = useState(null);
+  const [notifPermission, setNotifPermission] = useState(getNotificationPermission());
+  const [automationSummary, setAutomationSummary] = useState(null);
+  const [showAlerts, setShowAlerts] = useState(false);
+  const [templates, setTemplates] = useState(loadTemplates);
+  const [showSettings, setShowSettings] = useState(false);
+  const [showTemplates, setShowTemplates] = useState(false);
+  const [filterCategory, setFilterCategory] = useState("all");
+  const [detailSubId, setDetailSubId] = useState(null);
+  const [blockedNotice, setBlockedNotice] = useState(null);
+
+  const accountsById = useMemo(
+    () => Object.fromEntries(accounts.map((a) => [a.id, a])),
+    [accounts]
+  );
 
   const loadAll = useCallback(async () => {
     setLoadError("");
@@ -251,6 +299,34 @@ function Dashboard() {
   useEffect(() => {
     loadAll();
   }, [loadAll]);
+
+  // Exécuter l'automatisation : rappels + renouvellement auto
+  const automationRan = useRef(false);
+  useEffect(() => {
+    if (!loaded || !subs.length || automationRan.current) return;
+    automationRan.current = true;
+
+    cleanOldNotificationLog();
+
+    runAutomation(subs, accountsById, updateSub).then((summary) => {
+      setAutomationSummary(summary);
+      if (summary.renewed.length > 0) {
+        const names = summary.renewed.map((r) => r.client).join(", ");
+        showToast(`Renouvellement auto : ${names}`);
+      }
+      // Recharger pour refléter les renouvellements
+      if (summary.renewed.length > 0) loadAll();
+    });
+
+    // Vérifier toutes les heures
+    const interval = setInterval(async () => {
+      const s = await runAutomation(subs, accountsById, updateSub);
+      setAutomationSummary(s);
+      if (s.renewed.length > 0) loadAll();
+    }, 3600000);
+
+    return () => clearInterval(interval);
+  }, [loaded, subs, accountsById, updateSub]);
 
   function showToast(msg) {
     setToast(msg);
@@ -293,6 +369,31 @@ function Dashboard() {
       return;
     }
     await loadAll();
+  }
+
+  // Bloquer / débloquer un client.
+  // Lors d'un blocage, prépare automatiquement le message de notification WhatsApp.
+  async function toggleBlocked(sub) {
+    const willBlock = !sub.blocked;
+    const account = accountsById[sub.account_id];
+
+    await updateSub(sub.id, { blocked: willBlock });
+
+    if (account) {
+      const templateId = willBlock ? "blocked" : "unblocked";
+      const template = templates.find((t) => t.id === templateId);
+      if (template) {
+        setBlockedNotice({ sub, account, template, willBlock });
+        showToast(
+          willBlock
+            ? `${sub.client_name} bloqué — message de notification prêt`
+            : `${sub.client_name} débloqué — message de notification prêt`
+        );
+        return;
+      }
+    }
+
+    showToast(willBlock ? `${sub.client_name} bloqué` : `${sub.client_name} débloqué`);
   }
 
   async function deleteSub(id) {
@@ -360,13 +461,50 @@ function Dashboard() {
     await supabase.auth.signOut();
   }
 
-  const accountsById = Object.fromEntries(accounts.map((a) => [a.id, a]));
+  // Détection automatique des rappels
+  const pendingReminders = useMemo(() => detectReminders(subs, accountsById), [subs, accountsById]);
+
+  // Mettre à jour le badge PWA quand le nombre de rappels change
+  useEffect(() => {
+    setAppBadge(pendingReminders.length);
+  }, [pendingReminders.length]);
+
+  // Fonction pour envoyer un template à un client via WhatsApp
+  function sendTemplateToClient(template, sub, account) {
+    const extraVars = { jours_restants: daysUntil(sub.end_date) };
+    const message = fillTemplate(template.content, sub, account, extraVars);
+    const url = buildWhatsAppUrl(sub.contact, message);
+    if (url) {
+      window.open(url, "_blank");
+      showToast(`Message "${template.name}" ouvert pour ${sub.client_name}`);
+    } else {
+      showToast("Ajoutez un contact WhatsApp pour cet envoi");
+    }
+  }
+
+  // Fonction pour copier un template rempli
+  async function copyTemplateToClient(template, sub, account) {
+    const extraVars = { jours_restants: daysUntil(sub.end_date) };
+    const message = fillTemplate(template.content, sub, account, extraVars);
+    await copyMessage(message);
+  }
 
   const filteredSubs = useMemo(() => {
-    if (!search.trim()) return subs;
-    const q = search.trim().toLowerCase();
-    return subs.filter((s) => s.client_name?.toLowerCase().includes(q) || s.profile_name?.toLowerCase().includes(q));
-  }, [subs, search]);
+    let result = subs;
+    
+    // Filtrage par catégorie interactive du tableau de bord
+    if (filterCategory !== "all") {
+      result = result.filter(s => statusOf(s) === filterCategory);
+    }
+    
+    // Filtrage par recherche texte
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      result = result.filter((s) => s.client_name?.toLowerCase().includes(q) || s.profile_name?.toLowerCase().includes(q));
+    }
+    
+    return result;
+  }, [subs, search, filterCategory]);
 
   const sortedSubs = [...filteredSubs].sort((a, b) => {
     const order = { expired: 0, soon: 1, ok: 2, blocked: 3 };
@@ -392,58 +530,210 @@ function Dashboard() {
   const openAccount = openAccountId ? accountsById[openAccountId] : null;
   const accountSubs = openAccountId ? subs.filter((s) => s.account_id === openAccountId) : [];
 
+  const detailSub = detailSubId ? subs.find((s) => s.id === detailSubId) : null;
+  const detailAccount = detailSub ? accountsById[detailSub.account_id] : null;
+
   if (!loaded && !loadError) {
-    return <div className="min-h-screen bg-gray-950 flex items-center justify-center text-gray-500 text-sm">Chargement...</div>;
+    return <div className="min-h-screen bg-base flex items-center justify-center text-muted text-sm">Chargement...</div>;
   }
 
   return (
-    <div className="min-h-screen bg-gray-950 py-6 px-4">
-      <div className="w-full max-w-3xl mx-auto font-sans text-gray-100">
-        <div className="border-b border-gray-800 pb-4 mb-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
+    <div className="min-h-screen w-full bg-base">
+      <div className="w-full max-w-6xl mx-auto px-4 md:px-6 py-6 font-sans text-primary min-h-screen flex flex-col">
+        <header className="border-b border-line pb-5 mb-6">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3 shrink-0">
               <Logo />
               <div>
-                <h1 className="text-xl font-semibold tracking-tight text-gray-50">StreamDesk</h1>
-                <p className="text-sm text-gray-500 mt-0.5">Gestion des abonnements Netflix &amp; Spotify</p>
+                <h1 className="app-title font-semibold text-primary">StreamDesk</h1>
+                <p className="text-sm text-muted mt-0.5">Gestion des abonnements Netflix &amp; Spotify</p>
               </div>
             </div>
-            <div className="flex items-center gap-4">
-              <div className="text-right">
-                <div className="text-2xl font-semibold text-gray-50">{subs.length}</div>
-                <div className="text-xs text-gray-500">profils</div>
-              </div>
-              <button onClick={handleSignOut} className="text-xs text-gray-400 border border-gray-700 rounded px-2 py-1 hover:bg-gray-800 inline-flex items-center gap-1">
-                <LogOut size={13} /> Déconnexion
-              </button>
+            <div className="text-right shrink-0">
+              <div className="text-3xl font-semibold text-primary leading-none">{subs.length}</div>
+              <div className="text-xs text-muted mt-1">profils</div>
             </div>
           </div>
-          {loadError && (
-            <div className="mt-3 text-xs text-red-400 bg-red-500/10 border border-red-500/30 rounded px-3 py-1.5">{loadError}</div>
-          )}
-        </div>
 
-        <div className="grid grid-cols-5 gap-2 mb-5">
+          <div className="flex items-center gap-2 mt-4 flex-wrap">
+            {pendingReminders.length > 0 && (
+              <button
+                onClick={() => setTab("relances")}
+                className="text-xs text-danger border border-red-500/30 rounded px-2.5 py-1.5 hover:bg-red-500/10 inline-flex items-center gap-1.5"
+                title="Voir les rappels en attente"
+              >
+                <Bell size={13} />
+                {pendingReminders.length} relance{pendingReminders.length > 1 ? "s" : ""}
+              </button>
+            )}
+            <button
+              onClick={async () => {
+                const result = await requestNotificationPermission();
+                setNotifPermission(result);
+                if (result === "granted") {
+                  showToast("Notifications activées");
+                } else if (result === "denied") {
+                  showToast("Notifications refusées par le navigateur");
+                }
+              }}
+              className={`text-xs border rounded px-2.5 py-1.5 inline-flex items-center gap-1.5 ${
+                notifPermission === "granted"
+                  ? "text-success border-emerald-500/30 bg-emerald-500/10"
+                  : "text-secondary border-input-border hover:bg-hover"
+              }`}
+              title={notifPermission === "granted" ? "Notifications activées" : "Activer les notifications"}
+            >
+              {notifPermission === "granted" ? <Bell size={13} /> : <BellOff size={13} />}
+              {notifPermission === "granted" ? "Actives" : "Alertes"}
+            </button>
+            <button
+              onClick={toggleTheme}
+              className="text-xs text-secondary border border-input-border rounded px-2.5 py-1.5 hover:bg-hover inline-flex items-center gap-1.5"
+              aria-label={theme === "dark" ? "Activer le thème clair" : "Activer le thème sombre"}
+              title={theme === "dark" ? "Thème clair" : "Thème sombre"}
+            >
+              {theme === "dark" ? <Sun size={13} /> : <Moon size={13} />}
+              {theme === "dark" ? "Clair" : "Sombre"}
+            </button>
+            <button
+              onClick={() => setShowSettings(true)}
+              className="text-xs text-secondary border border-input-border rounded px-2.5 py-1.5 hover:bg-hover inline-flex items-center gap-1.5"
+              title="Paramètres"
+            >
+              <Settings2 size={13} /> Paramètres
+            </button>
+            <button
+              onClick={handleSignOut}
+              className="text-xs text-secondary border border-input-border rounded px-2.5 py-1.5 hover:bg-hover inline-flex items-center gap-1.5"
+            >
+              <LogOut size={13} /> Déconnexion
+            </button>
+          </div>
+
+          {loadError && (
+            <div className="mt-4 text-xs text-danger bg-red-500/10 border border-red-500/30 rounded px-3 py-1.5">{loadError}</div>
+          )}
+        </header>
+
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mb-5">
           {[
             { key: "ok", label: "Actifs" },
             { key: "soon", label: "Échéance proche" },
             { key: "expired", label: "Expirés" },
             { key: "blocked", label: "Bloqués" },
           ].map((s) => (
-            <div key={s.key} className="rounded-lg bg-gray-900 border border-gray-800 px-2 py-2.5 text-center">
-              <div className="text-lg font-semibold text-gray-50">{counts[s.key] || 0}</div>
-              <div className="text-[11px] text-gray-500 leading-tight mt-0.5">{s.label}</div>
-            </div>
+            <button
+              key={s.key}
+              onClick={() => {
+                setFilterCategory((c) => (c === s.key ? "all" : s.key));
+                setTab("dashboard");
+                setOpenAccountId(null);
+              }}
+              title={`Voir les clients : ${s.label}`}
+              className={`rounded-lg bg-card border px-2 py-2.5 text-center transition-colors ${
+                filterCategory === s.key
+                  ? "border-primary ring-1 ring-primary"
+                  : "border-line hover:border-input-border hover:bg-hover"
+              }`}
+            >
+              <div className="text-lg font-semibold text-primary">{counts[s.key] || 0}</div>
+              <div className="text-[11px] text-muted leading-tight mt-0.5">{s.label}</div>
+            </button>
           ))}
-          <div className="rounded-lg px-2 py-2.5 text-center" style={{ background: "linear-gradient(135deg, #7f1d1d 0%, #14532d 100%)" }}>
+          <div className="rounded-lg bg-revenue-gradient px-2 py-2.5 text-center">
             <div className="text-sm font-semibold text-white leading-tight">{formatFCFA(expectedRevenue)}</div>
             <div className="text-[11px] text-gray-200 leading-tight mt-0.5">Revenu attendu</div>
           </div>
         </div>
 
-        <div className="flex gap-1 mb-4 border-b border-gray-800">
+        {/* Indicateur de filtre actif */}
+        {filterCategory !== "all" && (
+          <div className="mb-4 flex items-center gap-2 text-sm text-secondary">
+            <span>
+              Filtre actif :{" "}
+              <strong className="text-primary">
+                {STATUS_LABEL[filterCategory]}
+              </strong>{" "}
+              ({counts[filterCategory] || 0} client{(counts[filterCategory] || 0) > 1 ? "s" : ""})
+            </span>
+            <button
+              onClick={() => setFilterCategory("all")}
+              className="text-xs text-muted hover:text-primary underline inline-flex items-center gap-1"
+            >
+              Réinitialiser
+            </button>
+          </div>
+        )}
+
+        {/* Alertes automatiques */}
+        {(() => {
+          const upcoming = getUpcomingDeadlines(subs, 7);
+          const monthly = getMonthlyRevenue(subs);
+          const hasAlerts = upcoming.length > 0 || (automationSummary?.renewed.length || 0) > 0;
+
+          if (!hasAlerts) return null;
+
+          return (
+            <div className="mb-5 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+              <div className="flex items-center gap-2 mb-2">
+                <Bell size={15} className="text-amber-400" />
+                <span className="subsection-title text-amber-300">Alertes automatiques</span>
+                <span className="text-xs text-muted ml-auto">{upcoming.length} échéance{upcoming.length > 1 ? "s" : ""} à venir</span>
+              </div>
+
+              {/* Revenu du mois */}
+              <div className="flex items-center gap-2 text-secondary mb-2 bg-card border border-line rounded px-2 py-1.5 client-text">
+                <TrendingUp size={13} className="text-success shrink-0" />
+                <span>Revenu du mois : <strong className="text-primary">{formatFCFA(monthly.total)}</strong> ({monthly.count} paiement{monthly.count > 1 ? "s" : ""})</span>
+              </div>
+
+              {/* Renouvellements automatiques récents */}
+              {automationSummary?.renewed.length > 0 && (
+                <div className="mb-2">
+                  {automationSummary.renewed.map((r, i) => (
+                    <div key={i} className="flex items-center gap-2 text-success mb-1 client-text">
+                      <Zap size={12} className="shrink-0" />
+                      <span>{r.client} : renouvelé automatiquement jusqu&apos;au {formatDate(r.newDate)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Échéances à venir */}
+              {upcoming.length > 0 && (
+                <div className="space-y-1">
+                  {upcoming.slice(0, 5).map((s) => (
+                    <div key={s.id} className="flex items-center gap-2 text-secondary client-text">
+                      <Clock size={12} className={`shrink-0 ${s.daysLeft <= 1 ? "text-red-400" : s.daysLeft <= 3 ? "text-amber-400" : "text-muted"}`} />
+                      <span className="truncate">
+                        <strong className="text-primary">{s.client_name}</strong> — échéance {s.daysLeft === 0 ? "aujourd'hui" : s.daysLeft === 1 ? "demain" : `dans ${s.daysLeft} j`}
+                      </span>
+                      <span className="text-muted ml-auto shrink-0">{formatDate(s.end_date)}</span>
+                    </div>
+                  ))}
+                  {upcoming.length > 5 && (
+                    <div className="text-xs text-muted mt-1">+ {upcoming.length - 5} autre(s) échéance(s)</div>
+                  )}
+                </div>
+              )}
+
+              {/* Bouton rappel en masse */}
+              {upcoming.length > 0 && (
+                <button
+                  onClick={() => setShowAlerts(true)}
+                  className="mt-2 text-xs text-success hover:text-emerald-300 inline-flex items-center gap-1"
+                >
+                  <Send size={12} /> Envoyer les rappels WhatsApp en masse
+                </button>
+              )}
+            </div>
+          );
+        })()}
+
+        <div className="flex gap-1 mb-4 border-b border-line">
           {[
             { key: "dashboard", label: "Tableau de bord" },
+            { key: "relances", label: `Relances${pendingReminders.length > 0 ? ` (${pendingReminders.length})` : ""}` },
             { key: "accounts", label: "Comptes" },
           ].map((t) => (
             <button
@@ -453,7 +743,7 @@ function Dashboard() {
                 setOpenAccountId(null);
               }}
               className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
-                tab === t.key ? "border-gray-100 text-gray-50" : "border-transparent text-gray-500 hover:text-gray-300"
+                tab === t.key ? "border-primary text-primary" : "border-transparent text-muted hover:text-secondary"
               }`}
             >
               {t.label}
@@ -462,17 +752,16 @@ function Dashboard() {
           <div className="flex-1" />
           <button
             onClick={() => setShowFormModal({ mode: "add" })}
-            className="inline-flex items-center gap-1.5 text-sm font-medium text-white rounded-md px-3 py-1.5 mb-1.5 self-center"
-            style={{ background: "linear-gradient(135deg, #dc2626 0%, #16a34a 100%)" }}
+            className="inline-flex items-center gap-1.5 text-sm font-medium text-white rounded-md px-3 py-1.5 mb-1.5 self-center bg-brand-gradient"
           >
             <Plus size={15} /> Nouveau profil
           </button>
         </div>
 
-        {tab === "dashboard" && (
+        {tab === "dashboard" && !detailSub && (
           <div className="space-y-2">
             <div className="relative mb-2">
-              <Search size={15} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500" />
+              <Search size={15} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted" />
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
@@ -481,8 +770,12 @@ function Dashboard() {
               />
             </div>
             {sortedSubs.length === 0 && (
-              <div className="text-center py-12 text-gray-500 text-sm bg-gray-900 border border-gray-800 rounded-lg">
-                {search ? "Aucun résultat pour cette recherche." : "Aucun profil pour l'instant. Ajoutez votre premier client avec \"+ Nouveau profil\"."}
+              <div className="text-center py-12 text-muted text-sm bg-card border border-line rounded-lg">
+                {search
+                  ? "Aucun résultat pour cette recherche."
+                  : filterCategory !== "all"
+                  ? `Aucun client dans la catégorie « ${STATUS_LABEL[filterCategory]} ».`
+                  : "Aucun profil pour l'instant. Ajoutez votre premier client avec \"+ Nouveau profil\"."}
               </div>
             )}
             {sortedSubs.map((s) => (
@@ -490,21 +783,233 @@ function Dashboard() {
                 key={s.id}
                 sub={s}
                 account={accountsById[s.account_id]}
-                onEdit={() => setShowFormModal({ mode: "edit", sub: s })}
+                onOpenDetail={() => setDetailSubId(s.id)}
                 onMessage={() => setMessageModal(s)}
                 onTogglePaid={() => updateSub(s.id, { paid: !s.paid })}
                 onRenew={() => renew(s)}
-                onToggleBlocked={() => updateSub(s.id, { blocked: !s.blocked })}
-                onDelete={() => deleteSub(s.id)}
+                onToggleBlocked={() => toggleBlocked(s)}
+                onSendWelcome={() => {
+                  const t = templates.find((t) => t.id === "welcome");
+                  if (t && accountsById[s.account_id]) sendTemplateToClient(t, s, accountsById[s.account_id]);
+                }}
+                onSendPaymentReceived={() => {
+                  const t = templates.find((t) => t.id === "payment_received");
+                  if (t && accountsById[s.account_id]) sendTemplateToClient(t, s, accountsById[s.account_id]);
+                }}
               />
             ))}
           </div>
         )}
 
-        {tab === "accounts" && !openAccount && (
+        {tab === "relances" && (
+          <div className="space-y-2">
+            {pendingReminders.length === 0 && (
+              <div className="text-center py-12 text-muted text-sm bg-card border border-line rounded-lg">
+                Aucun rappel en attente. Tous vos clients sont à jour !
+              </div>
+            )}
+            {pendingReminders.map(({ sub, account, template, reason }) => {
+              const extraVars = { jours_restants: daysUntil(sub.end_date) };
+              const message = fillTemplate(template.content, sub, account, extraVars);
+              const waUrl = buildWhatsAppUrl(sub.contact, message);
+              return (
+                <div key={sub.id} className="rounded-lg border border-line bg-card px-3 py-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {account && <PlatformIcon platform={account.platform} />}
+                        <span className="subsection-title text-primary truncate">{sub.client_name}</span>
+                        <span className={`text-[11px] px-1.5 py-0.5 rounded border ${
+                          reason === "Expiré" ? "bg-red-500/10 text-danger border-red-500/30" :
+                          reason === "Expire aujourd'hui" ? "bg-amber-500/10 text-warning border-amber-500/30" :
+                          "bg-amber-500/10 text-warning border-amber-500/30"
+                        }`}>
+                          {reason}
+                        </span>
+                      </div>
+                      <div className="text-sm text-muted mt-1 client-text">
+                        {account ? account.name : "Compte supprimé"} · profil "{sub.profile_name}" · échéance {formatDate(sub.end_date)}
+                      </div>
+                      <div className="text-xs text-muted mt-1 italic">{template.name}</div>
+                    </div>
+                  </div>
+                  <div className="text-sm text-secondary mt-2 whitespace-pre-line line-clamp-3 bg-input-bg border border-line rounded p-2 client-text">
+                    {message}
+                  </div>
+                  <div className="flex gap-2 mt-2.5">
+                    <button
+                      onClick={() => copyTemplateToClient(template, sub, account)}
+                      className={btnGhost}
+                    >
+                      Copier
+                    </button>
+                    {waUrl ? (
+                      <a
+                        href={waUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white"
+                      >
+                        <Send size={12} /> Envoyer
+                      </a>
+                    ) : (
+                      <span className="text-xs text-muted self-center">Pas de contact WhatsApp</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Fiche détaillée d'un client (point 7 & 8) */}
+        {detailSub && (
+          <div className="space-y-3">
+            <button
+              onClick={() => setDetailSubId(null)}
+              className="text-sm text-secondary hover:text-primary inline-flex items-center gap-1"
+            >
+              <ArrowLeft size={14} /> Retour à la liste
+            </button>
+
+            <div className="rounded-lg border border-line bg-card px-4 py-4">
+              <div className="flex items-start justify-between gap-3 flex-wrap">
+                <div className="flex items-center gap-3 min-w-0">
+                  {detailAccount && <PlatformIcon platform={detailAccount.platform} size={24} />}
+                  <div className="min-w-0">
+                    <h2 className="section-title text-primary truncate">{detailSub.client_name}</h2>
+                    <p className="text-sm text-muted mt-0.5">
+                      {detailAccount ? detailAccount.name : "Compte supprimé"}
+                    </p>
+                  </div>
+                </div>
+                <Badge status={statusOf(detailSub)} />
+              </div>
+
+              <dl className="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-4 client-text">
+                <div>
+                  <dt className="text-xs text-muted uppercase tracking-wide">Type d'abonnement</dt>
+                  <dd className="text-primary">{detailAccount ? detailAccount.platform : "-"}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-muted uppercase tracking-wide">Profil</dt>
+                  <dd className="text-primary">{detailSub.profile_name || "-"}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-muted uppercase tracking-wide">Formule</dt>
+                  <dd className="text-primary">{detailSub.formula || "-"}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-muted uppercase tracking-wide">Code PIN</dt>
+                  <dd className="text-primary">{detailSub.pin || "-"}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-muted uppercase tracking-wide">Contact WhatsApp</dt>
+                  <dd className="text-primary">{detailSub.contact || "-"}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-muted uppercase tracking-wide">Prix</dt>
+                  <dd className="text-primary">{detailSub.price ? formatFCFA(detailSub.price) : "-"}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-muted uppercase tracking-wide">Date de début</dt>
+                  <dd className="text-primary">{formatDate(detailSub.start_date)}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-muted uppercase tracking-wide">Date d'échéance</dt>
+                  <dd className="text-primary">
+                    {formatDate(detailSub.end_date)}
+                    <span className="text-muted">
+                      {daysUntil(detailSub.end_date) >= 0
+                        ? ` (${daysUntil(detailSub.end_date)} j)`
+                        : ` (dépassé de ${Math.abs(daysUntil(detailSub.end_date))} j)`}
+                    </span>
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-muted uppercase tracking-wide">Paiement</dt>
+                  <dd className="text-primary">{detailSub.paid ? "Payé" : "Non payé"}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs text-muted uppercase tracking-wide">État</dt>
+                  <dd className="text-primary">{detailSub.blocked ? "Bloqué" : "Actif"}</dd>
+                </div>
+              </dl>
+            </div>
+
+            <div className="rounded-lg border border-line bg-card px-4 py-4">
+              <div className="subsection-title text-primary mb-3">Actions</div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={() => setShowFormModal({ mode: "edit", sub: detailSub })}
+                  className="inline-flex items-center gap-1.5 text-sm px-3 py-1.5 rounded border border-input-border text-secondary hover:bg-hover"
+                >
+                  <Pencil size={13} /> Modifier
+                </button>
+                <button
+                  onClick={() => setMessageModal(detailSub)}
+                  className="inline-flex items-center gap-1.5 text-sm px-3 py-1.5 rounded border border-input-border text-secondary hover:bg-hover"
+                >
+                  <MessageSquare size={13} /> Rappel
+                </button>
+                <button
+                  onClick={() => updateSub(detailSub.id, { paid: !detailSub.paid })}
+                  className="inline-flex items-center gap-1.5 text-sm px-3 py-1.5 rounded border border-input-border text-secondary hover:bg-hover"
+                >
+                  {detailSub.paid ? <Circle size={13} /> : <CheckCircle2 size={13} />}
+                  {detailSub.paid ? "Marquer non payé" : "Marquer payé"}
+                </button>
+                <button
+                  onClick={() => renew(detailSub)}
+                  className="inline-flex items-center gap-1.5 text-sm px-3 py-1.5 rounded border border-emerald-500/30 text-success hover:bg-emerald-500/10"
+                >
+                  <RotateCcw size={13} /> Renouveler +30j
+                </button>
+                <button
+                  onClick={() => toggleBlocked(detailSub)}
+                  className="inline-flex items-center gap-1.5 text-sm px-3 py-1.5 rounded border border-input-border text-secondary hover:bg-hover"
+                >
+                  {detailSub.blocked ? <Unlock size={13} /> : <Lock size={13} />}
+                  {detailSub.blocked ? "Débloquer" : "Bloquer"}
+                </button>
+                <button
+                  onClick={() => {
+                    const t = templates.find((t) => t.id === "welcome");
+                    if (t && detailAccount) sendTemplateToClient(t, detailSub, detailAccount);
+                  }}
+                  className="inline-flex items-center gap-1.5 text-sm px-3 py-1.5 rounded border border-emerald-500/30 text-success hover:bg-emerald-500/10"
+                >
+                  <MessageSquare size={13} /> Message de bienvenue
+                </button>
+                <button
+                  onClick={() => {
+                    const t = templates.find((t) => t.id === "payment_received");
+                    if (t && detailAccount) sendTemplateToClient(t, detailSub, detailAccount);
+                  }}
+                  className="inline-flex items-center gap-1.5 text-sm px-3 py-1.5 rounded border border-emerald-500/30 text-success hover:bg-emerald-500/10"
+                >
+                  <CheckCircle2 size={13} /> Paiement bien reçu
+                </button>
+                <button
+                  onClick={() => {
+                    if (window.confirm(`Supprimer définitivement le profil de ${detailSub.client_name} ?`)) {
+                      setDetailSubId(null);
+                      deleteSub(detailSub.id);
+                    }
+                  }}
+                  className="inline-flex items-center gap-1.5 text-sm px-3 py-1.5 rounded border border-red-500/30 text-danger hover:bg-red-500/10 sm:ml-auto"
+                >
+                  <Trash2 size={13} /> Supprimer
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {tab === "accounts" && !openAccount && !detailSub && (
           <div className="space-y-2">
             {occupiedByAccount.map((acc) => (
-              <div key={acc.id} className="rounded-lg border border-gray-800 bg-gray-900 px-3 py-3">
+              <div key={acc.id} className="rounded-lg border border-line bg-card px-3 py-3">
                 {editingAccounts ? (
                   <div className="space-y-2">
                     <input value={acc.name} onChange={(e) => updateAccount(acc.id, { name: e.target.value })} className={inputCls} placeholder="Nom du compte" />
@@ -522,7 +1027,7 @@ function Dashboard() {
                       />
                       <input value={acc.email} onChange={(e) => updateAccount(acc.id, { email: e.target.value })} className={inputCls} placeholder="Email du compte" />
                     </div>
-                    <button onClick={() => deleteAccount(acc.id)} className="text-xs text-red-400 hover:underline inline-flex items-center gap-1">
+                    <button onClick={() => deleteAccount(acc.id)} className="text-xs text-danger hover:underline inline-flex items-center gap-1">
                       <Trash2 size={12} /> Supprimer ce compte
                     </button>
                   </div>
@@ -531,32 +1036,32 @@ function Dashboard() {
                     <div className="flex items-center gap-2.5">
                       <PlatformIcon platform={acc.platform} size={18} />
                       <div>
-                        <div className="font-medium text-gray-100">{acc.name}</div>
-                        <div className="text-xs text-gray-500 mt-0.5">
+                        <div className="subsection-title text-primary">{acc.name}</div>
+                        <div className="text-muted mt-0.5 client-text">
                           {acc.platform} · {acc.occupied}/{acc.slots} places occupées
                           {acc.email ? ` · ${acc.email}` : ""}
                         </div>
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      <div className="w-20 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                      <div className="w-20 h-1.5 bg-track rounded-full overflow-hidden">
                         <div
                           className={`h-full ${acc.occupied >= acc.slots ? "bg-red-500" : "bg-gray-400"}`}
                           style={{ width: `${Math.min(100, (acc.occupied / acc.slots) * 100)}%` }}
                         />
                       </div>
-                      <ChevronRight size={16} className="text-gray-600" />
+                      <ChevronRight size={16} className="text-muted" />
                     </div>
                   </button>
                 )}
               </div>
             ))}
             <div className="flex gap-2 pt-1">
-              <button onClick={() => setEditingAccounts((v) => !v)} className={`${btnGhost} bg-gray-900`}>
+              <button onClick={() => setEditingAccounts((v) => !v)} className={`${btnGhost} bg-card`}>
                 <Settings2 size={13} /> {editingAccounts ? "Terminer" : "Modifier les comptes"}
               </button>
               {editingAccounts && (
-                <button onClick={addAccount} className={`${btnGhost} bg-gray-900`}>
+                <button onClick={addAccount} className={`${btnGhost} bg-card`}>
                   <Plus size={13} /> Ajouter un compte
                 </button>
               )}
@@ -564,22 +1069,22 @@ function Dashboard() {
           </div>
         )}
 
-        {tab === "accounts" && openAccount && (
+        {tab === "accounts" && openAccount && !detailSub && (
           <div className="space-y-2">
-            <button onClick={() => setOpenAccountId(null)} className="text-sm text-gray-400 hover:text-gray-100 mb-1 inline-flex items-center gap-1">
+            <button onClick={() => setOpenAccountId(null)} className="text-sm text-secondary hover:text-primary mb-1 inline-flex items-center gap-1">
               <ArrowLeft size={14} /> Retour aux comptes
             </button>
-            <div className="bg-gray-900 border border-gray-800 rounded-lg px-3 py-3 mb-2 flex items-center gap-2.5">
+            <div className="bg-card border border-line rounded-lg px-3 py-3 mb-2 flex items-center gap-2.5">
               <PlatformIcon platform={openAccount.platform} size={20} />
               <div>
-                <div className="font-medium text-gray-100">{openAccount.name}</div>
-                <div className="text-xs text-gray-500 mt-0.5">
+                <div className="subsection-title text-primary">{openAccount.name}</div>
+                <div className="text-muted mt-0.5 client-text">
                   {openAccount.platform} · {accountSubs.filter((s) => !s.blocked).length}/{openAccount.slots} places occupées
                 </div>
               </div>
             </div>
             {accountSubs.length === 0 && (
-              <div className="text-center py-8 text-gray-500 text-sm bg-gray-900 border border-gray-800 rounded-lg">
+              <div className="text-center py-8 text-muted text-sm bg-card border border-line rounded-lg">
                 Aucun profil sur ce compte pour l'instant.
               </div>
             )}
@@ -588,12 +1093,19 @@ function Dashboard() {
                 key={s.id}
                 sub={s}
                 account={openAccount}
-                onEdit={() => setShowFormModal({ mode: "edit", sub: s })}
+                onOpenDetail={() => setDetailSubId(s.id)}
                 onMessage={() => setMessageModal(s)}
                 onTogglePaid={() => updateSub(s.id, { paid: !s.paid })}
                 onRenew={() => renew(s)}
-                onToggleBlocked={() => updateSub(s.id, { blocked: !s.blocked })}
-                onDelete={() => deleteSub(s.id)}
+                onToggleBlocked={() => toggleBlocked(s)}
+                onSendWelcome={() => {
+                  const t = templates.find((t) => t.id === "welcome");
+                  if (t && openAccount) sendTemplateToClient(t, s, openAccount);
+                }}
+                onSendPaymentReceived={() => {
+                  const t = templates.find((t) => t.id === "payment_received");
+                  if (t && openAccount) sendTemplateToClient(t, s, openAccount);
+                }}
               />
             ))}
           </div>
@@ -608,47 +1120,180 @@ function Dashboard() {
           />
         )}
 
-        {messageModal && (
-          <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-            <div className="bg-gray-900 border border-gray-800 rounded-lg max-w-md w-full p-4">
-              <div className="font-medium text-gray-100 mb-2 flex items-center gap-1.5">
-                <MessageSquare size={15} /> Message de rappel
-              </div>
-              <textarea
-                readOnly
-                value={buildReminderMessage(messageModal, accountsById[messageModal.account_id])}
-                className="w-full h-40 text-sm bg-gray-800 border border-gray-700 rounded p-2 text-gray-200 resize-none"
-              />
-              <div className="flex flex-wrap justify-end gap-2 mt-3">
-                <button onClick={() => setMessageModal(null)} className="text-sm px-3 py-1.5 rounded border border-gray-700 text-gray-300">
-                  Fermer
-                </button>
-                <button
-                  onClick={() => copyMessage(buildReminderMessage(messageModal, accountsById[messageModal.account_id]))}
-                  className="text-sm px-3 py-1.5 rounded border border-gray-700 text-gray-300"
-                >
-                  Copier le message
-                </button>
-                {whatsappLink(messageModal.contact, buildReminderMessage(messageModal, accountsById[messageModal.account_id])) ? (
-                  <a
-                    href={whatsappLink(messageModal.contact, buildReminderMessage(messageModal, accountsById[messageModal.account_id]))}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-sm px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-center"
-                  >
-                    Envoyer sur WhatsApp
-                  </a>
-                ) : (
-                  <span className="text-xs text-gray-500 self-center">Ajoutez un contact pour l'envoi direct</span>
-                )}
+        {/* Modale de rappel en masse WhatsApp */}
+        {showAlerts && (() => {
+          const messages = buildBulkReminderMessages(subs, accountsById);
+          if (messages.length === 0) return null;
+          return (
+            <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+              <div className="bg-card border border-line rounded-lg max-w-lg w-full p-4 max-h-[85vh] flex flex-col">
+                <div className="subsection-title text-primary mb-1 flex items-center gap-1.5">
+                  <Send size={15} /> Rappels en masse — {messages.length} client{messages.length > 1 ? "s" : ""}
+                </div>
+                <p className="text-xs text-muted mb-3">
+                  Messages de rappel WhatsApp pour les échéances à venir. Cliquez pour envoyer à chaque client.
+                </p>
+                <div className="space-y-2 overflow-y-auto flex-1">
+                  {messages.map(({ sub, message, whatsappUrl }) => (
+                    <div key={sub.id} className="rounded border border-line bg-input-bg p-2.5">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="subsection-title text-primary">{sub.client_name}</span>
+                        {sub.daysLeft !== undefined && (
+                          <span className={`text-[11px] px-1.5 py-0.5 rounded border ${STATUS_STYLE[sub.daysLeft <= 1 ? "expired" : sub.daysLeft <= 3 ? "soon" : "ok"]}`}>
+                            {sub.daysLeft === 0 ? "Aujourd'hui" : sub.daysLeft === 1 ? "Demain" : `${sub.daysLeft} j`}
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-muted mb-2 whitespace-pre-line line-clamp-3 client-text">{message}</div>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => copyMessage(message)}
+                          className={`${btnGhost} flex-1 justify-center`}
+                        >
+                          Copier
+                        </button>
+                        {whatsappUrl ? (
+                          <a
+                            href={whatsappUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="flex-1 text-center text-xs px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white"
+                          >
+                            Envoyer
+                          </a>
+                        ) : (
+                          <span className="flex-1 text-center text-xs text-muted py-1">Pas de contact</span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex justify-end mt-3 pt-3 border-t border-line">
+                  <button onClick={() => setShowAlerts(false)} className="text-sm px-3 py-1.5 rounded border border-input-border text-secondary">
+                    Fermer
+                  </button>
+                </div>
               </div>
             </div>
-          </div>
+          );
+        })()}
+
+        {/* Notification de blocage générée automatiquement (point 5) */}
+        {blockedNotice && (() => {
+          const { sub, account, template, willBlock } = blockedNotice;
+          const message = fillTemplate(template.content, sub, account, {
+            jours_restants: daysUntil(sub.end_date),
+          });
+          const waUrl = buildWhatsAppUrl(sub.contact, message);
+          return (
+            <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+              <div className="bg-card border border-line rounded-lg max-w-md w-full p-4">
+                <div className="subsection-title text-primary mb-1 flex items-center gap-1.5">
+                  {willBlock ? <Lock size={15} /> : <Unlock size={15} />}
+                  {willBlock ? "Client bloqué — notifier" : "Client débloqué — notifier"}
+                </div>
+                <p className="text-xs text-muted mb-3">
+                  Le profil de <strong className="text-primary">{sub.client_name}</strong> est maintenant{" "}
+                  {willBlock ? "bloqué" : "débloqué"}. Le message ci-dessous a été généré automatiquement — envoyez-le
+                  pour l&apos;informer.
+                </p>
+                <textarea
+                  readOnly
+                  value={message}
+                  className="w-full h-44 text-sm bg-input-bg border border-input-border rounded p-2 text-input-text resize-none client-text"
+                />
+                <div className="flex flex-wrap justify-end gap-2 mt-3">
+                  <button onClick={() => setBlockedNotice(null)} className="text-sm px-3 py-1.5 rounded border border-input-border text-secondary">
+                    Fermer
+                  </button>
+                  <button onClick={() => copyMessage(message)} className="text-sm px-3 py-1.5 rounded border border-input-border text-secondary">
+                    Copier le message
+                  </button>
+                  {waUrl ? (
+                    <a
+                      href={waUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      onClick={() => setBlockedNotice(null)}
+                      className="text-sm px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-center"
+                    >
+                      Envoyer sur WhatsApp
+                    </a>
+                  ) : (
+                    <span className="text-xs text-muted self-center">Ajoutez un contact pour l&apos;envoi direct</span>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {messageModal && (
+          <MessageModal
+            sub={messageModal}
+            account={accountsById[messageModal.account_id]}
+            templates={templates}
+            onClose={() => setMessageModal(null)}
+            onCopy={copyMessage}
+          />
         )}
 
         {toast && (
-          <div className="fixed bottom-4 left-1/2 -translate-x-1/2 bg-gray-800 border border-gray-700 text-gray-100 text-sm px-4 py-2 rounded-md shadow-lg z-50">
+          <div className="fixed bottom-4 left-1/2 -translate-x-1/2 bg-hover border border-input-border text-primary text-sm px-4 py-2 rounded-md shadow-lg z-50">
             {toast}
+          </div>
+        )}
+
+        {/* Modale Paramètres - Gestion des templates */}
+        {showSettings && (
+          <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+            <div className="bg-card border border-line rounded-lg max-w-lg w-full p-4 max-h-[85vh] flex flex-col">
+              <div className="subsection-title text-primary mb-1 flex items-center gap-1.5">
+                <Settings2 size={15} /> Paramètres
+              </div>
+              <p className="text-xs text-muted mb-3">
+                Gérez vos templates de messages. Variables disponibles : {'{prenom}'}, {'{date_echeance}'}, {'{compte}'}, {'{profil}'}, {'{formule}'}, {'{jours_restants}'}, {'{infos_paiement}'}
+              </p>
+              <div className="space-y-3 overflow-y-auto flex-1">
+                {templates.map((t, idx) => (
+                  <div key={t.id} className="rounded border border-line bg-input-bg p-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="subsection-title text-primary">{t.name}</span>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded border ${
+                        t.trigger === "auto" ? "bg-blue-500/10 text-blue-400 border-blue-500/30" : "bg-gray-500/10 text-neutral border-gray-500/30"
+                      }`}>
+                        {t.trigger === "auto" ? "Automatique" : "Manuel"}
+                      </span>
+                    </div>
+                    <textarea
+                      value={t.content}
+                      onChange={(e) => {
+                        const updated = [...templates];
+                        updated[idx] = { ...t, content: e.target.value };
+                        setTemplates(updated);
+                        saveTemplates(updated);
+                      }}
+                      className="w-full h-24 text-xs bg-input-bg border border-input-border rounded p-2 text-input-text resize-none"
+                    />
+                  </div>
+                ))}
+              </div>
+              <div className="flex justify-between items-center mt-3 pt-3 border-t border-line">
+                <button
+                  onClick={() => {
+                    setTemplates(loadTemplates());
+                    saveTemplates(loadTemplates());
+                    showToast("Templates réinitialisés");
+                  }}
+                  className="text-xs text-danger hover:underline"
+                >
+                  Réinitialiser par défaut
+                </button>
+                <button onClick={() => setShowSettings(false)} className="text-sm px-3 py-1.5 rounded border border-input-border text-secondary">
+                  Fermer
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </div>
@@ -656,51 +1301,133 @@ function Dashboard() {
   );
 }
 
-function ProfileRow({ sub: s, account, onEdit, onMessage, onTogglePaid, onRenew, onToggleBlocked, onDelete }) {
+function MessageModal({ sub, account, templates, onClose, onCopy }) {
+  const defaultTemplateId = templates.find((t) => t.id === "renewal_reminder")?.id || templates[0]?.id;
+  const [selectedTemplateId, setSelectedTemplateId] = useState(defaultTemplateId);
+
+  const selectedTemplate = templates.find((t) => t.id === selectedTemplateId) || templates[0];
+  const message = selectedTemplate
+    ? fillTemplate(selectedTemplate.content, sub, account, { jours_restants: daysUntil(sub.end_date) })
+    : buildReminderMessage(sub, account);
+  const waUrl = buildWhatsAppUrl(sub.contact, message);
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+      <div className="bg-card border border-line rounded-lg max-w-md w-full p-4">
+        <div className="subsection-title text-primary mb-2 flex items-center gap-1.5">
+          <MessageSquare size={15} /> Message de rappel
+        </div>
+        <div className="mb-2">
+          <label className="block text-xs text-muted mb-1">Template</label>
+          <select value={selectedTemplateId} onChange={(e) => setSelectedTemplateId(e.target.value)} className={inputCls}>
+            {templates.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        <textarea
+          readOnly
+          value={message}
+          className="w-full h-40 text-sm bg-input-bg border border-input-border rounded p-2 text-input-text resize-none client-text"
+        />
+        <div className="flex flex-wrap justify-end gap-2 mt-3">
+          <button onClick={onClose} className="text-sm px-3 py-1.5 rounded border border-input-border text-secondary">
+            Fermer
+          </button>
+          <button onClick={() => onCopy(message)} className="text-sm px-3 py-1.5 rounded border border-input-border text-secondary">
+            Copier le message
+          </button>
+          {waUrl ? (
+            <a
+              href={waUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="text-sm px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-center"
+            >
+              Envoyer sur WhatsApp
+            </a>
+          ) : (
+            <span className="text-xs text-muted self-center">Ajoutez un contact pour l&apos;envoi direct</span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ProfileRow({
+  sub: s,
+  account,
+  onOpenDetail,
+  onMessage,
+  onTogglePaid,
+  onRenew,
+  onToggleBlocked,
+  onSendWelcome,
+  onSendPaymentReceived,
+}) {
   const status = statusOf(s);
   const d = daysUntil(s.end_date);
   return (
-    <div className="rounded-lg border border-gray-800 bg-gray-900 px-3 py-3 hover:border-gray-700 transition-colors">
+    <div
+      onClick={onOpenDetail}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onOpenDetail();
+        }
+      }}
+      className="rounded-lg border border-line bg-card px-3 py-3 hover:border-input-border transition-colors cursor-pointer"
+    >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             {account && <PlatformIcon platform={account.platform} />}
-            <span className="font-medium text-gray-100 truncate">{s.client_name}</span>
+            <span className="subsection-title text-primary truncate">{s.client_name}</span>
             <Badge status={status} />
             {s.paid ? (
-              <span className="text-xs text-emerald-400 inline-flex items-center gap-1"><CheckCircle2 size={12} /> Payé</span>
+              <span className="text-xs text-success inline-flex items-center gap-1"><CheckCircle2 size={12} /> Payé</span>
             ) : (
-              <span className="text-xs text-gray-500 inline-flex items-center gap-1"><Circle size={12} /> Non payé</span>
+              <span className="text-xs text-muted inline-flex items-center gap-1"><Circle size={12} /> Non payé</span>
             )}
           </div>
-          <div className="text-xs text-gray-500 mt-1">
+          <div className="text-sm text-muted mt-1 client-text">
             {account ? account.name : "Compte supprimé"} · profil "{s.profile_name}"
             {s.formula ? ` · ${s.formula}` : ""} · échéance {formatDate(s.end_date)}
             {d >= 0 ? ` (${d} j)` : ` (dépassé de ${Math.abs(d)} j)`}
             {s.price ? ` · ${formatFCFA(s.price)}` : ""}
           </div>
-          {s.contact && <div className="text-xs text-gray-600 mt-0.5">{s.contact}</div>}
+          {s.contact && <div className="text-sm text-muted mt-0.5 client-text">{s.contact}</div>}
         </div>
+        <ChevronRight size={16} className="text-muted shrink-0 mt-1" />
       </div>
-      <div className="flex flex-wrap gap-1.5 mt-2.5">
-        <button onClick={onEdit} className={btnGhost}>
-          <Pencil size={12} /> Modifier
-        </button>
+      <div className="flex flex-wrap gap-1.5 mt-2.5" onClick={(e) => e.stopPropagation()}>
         <button onClick={onMessage} className={btnGhost}>
           <MessageSquare size={12} /> Rappel
         </button>
         <button onClick={onTogglePaid} className={btnGhost}>
           {s.paid ? <Circle size={12} /> : <CheckCircle2 size={12} />} {s.paid ? "Non payé" : "Payé"}
         </button>
-        <button onClick={onRenew} className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10">
+        <button onClick={onRenew} className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded border border-emerald-500/30 text-success hover:bg-emerald-500/10">
           <RotateCcw size={12} /> +30j
         </button>
         <button onClick={onToggleBlocked} className={btnGhost}>
           {s.blocked ? <Unlock size={12} /> : <Lock size={12} />} {s.blocked ? "Débloquer" : "Bloquer"}
         </button>
-        <button onClick={onDelete} className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded border border-red-500/30 text-red-400 hover:bg-red-500/10 ml-auto">
-          <Trash2 size={12} /> Supprimer
-        </button>
+        {onSendWelcome && (
+          <button onClick={onSendWelcome} className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded border border-emerald-500/30 text-success hover:bg-emerald-500/10">
+            <MessageSquare size={12} /> Bienvenue
+          </button>
+        )}
+        {onSendPaymentReceived && (
+          <button onClick={onSendPaymentReceived} className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded border border-emerald-500/30 text-success hover:bg-emerald-500/10">
+            <CheckCircle2 size={12} /> Paiement reçu
+          </button>
+        )}
       </div>
     </div>
   );
@@ -738,19 +1465,19 @@ function ProfileFormModal({ accounts, initial, onCancel, onSubmit }) {
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-      <div className="bg-gray-900 border border-gray-800 rounded-lg max-w-md w-full p-4 max-h-[85vh] overflow-y-auto">
-        <div className="font-medium text-gray-100 mb-3">{isEdit ? "Modifier le profil" : "Nouveau profil"}</div>
+      <div className="bg-card border border-line rounded-lg max-w-md w-full p-4 max-h-[85vh] overflow-y-auto">
+        <div className="subsection-title text-primary mb-3">{isEdit ? "Modifier le profil" : "Nouveau profil"}</div>
         <div className="space-y-2.5">
           <div>
-            <label className="block text-xs text-gray-500 mb-1">Nom du client</label>
+            <label className="block text-xs text-muted mb-1">Nom du client</label>
             <input value={clientName} onChange={(e) => setClientName(e.target.value)} className={inputCls} placeholder="ex : Awa Koné" />
           </div>
           <div>
-            <label className="block text-xs text-gray-500 mb-1">Contact WhatsApp (avec indicatif pays, ex : 22961000000)</label>
+            <label className="block text-xs text-muted mb-1">Contact WhatsApp (avec indicatif pays, ex : 22961000000)</label>
             <input value={contact} onChange={(e) => setContact(e.target.value)} className={inputCls} placeholder="ex : 22961000000" />
           </div>
           <div>
-            <label className="block text-xs text-gray-500 mb-1">Compte</label>
+            <label className="block text-xs text-muted mb-1">Compte</label>
             <select value={accountId} onChange={(e) => setAccountId(e.target.value)} className={inputCls}>
               {accounts.map((a) => (
                 <option key={a.id} value={a.id}>
@@ -761,11 +1488,11 @@ function ProfileFormModal({ accounts, initial, onCancel, onSubmit }) {
           </div>
           <div className="flex gap-2">
             <div className="flex-1">
-              <label className="block text-xs text-gray-500 mb-1">Nom du profil</label>
+              <label className="block text-xs text-muted mb-1">Nom du profil</label>
               <input value={profileName} onChange={(e) => setProfileName(e.target.value)} className={inputCls} placeholder="ex : Awa" />
             </div>
             <div className="w-28">
-              <label className="block text-xs text-gray-500 mb-1">Formule</label>
+              <label className="block text-xs text-muted mb-1">Formule</label>
               <select value={formula} onChange={(e) => setFormula(e.target.value)} className={inputCls}>
                 <option>Standard</option>
                 <option>Avec TV</option>
@@ -774,35 +1501,31 @@ function ProfileFormModal({ accounts, initial, onCancel, onSubmit }) {
           </div>
           <div className="flex gap-2">
             <div className="flex-1">
-              <label className="block text-xs text-gray-500 mb-1">Code PIN</label>
+              <label className="block text-xs text-muted mb-1">Code PIN</label>
               <input value={pin} onChange={(e) => setPin(e.target.value)} className={inputCls} placeholder="ex : 4821" />
             </div>
             <div className="flex-1">
-              <label className="block text-xs text-gray-500 mb-1">Prix (FCFA)</label>
+              <label className="block text-xs text-muted mb-1">Prix (FCFA)</label>
               <input type="number" value={price} onChange={(e) => setPrice(e.target.value)} className={inputCls} placeholder="ex : 2000" />
             </div>
           </div>
           <div className="flex gap-2">
             <div className="flex-1">
-              <label className="block text-xs text-gray-500 mb-1">Date de début</label>
+              <label className="block text-xs text-muted mb-1">Date de début</label>
               <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className={inputCls} />
             </div>
             <div className="flex-1">
-              <label className="block text-xs text-gray-500 mb-1">Date d'échéance</label>
+              <label className="block text-xs text-muted mb-1">Date d'échéance</label>
               <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className={inputCls} />
             </div>
           </div>
-          {error && <div className="text-xs text-red-400">{error}</div>}
+          {error && <div className="text-xs text-danger">{error}</div>}
         </div>
         <div className="flex justify-end gap-2 mt-4">
-          <button onClick={onCancel} className="text-sm px-3 py-1.5 rounded border border-gray-700 text-gray-300">
+          <button onClick={onCancel} className="text-sm px-3 py-1.5 rounded border border-input-border text-secondary">
             Annuler
           </button>
-          <button
-            onClick={handleSubmit}
-            className="text-sm px-3 py-1.5 rounded text-white"
-            style={{ background: "linear-gradient(135deg, #dc2626 0%, #16a34a 100%)" }}
-          >
+          <button onClick={handleSubmit} className="text-sm px-3 py-1.5 rounded text-white bg-brand-gradient">
             {isEdit ? "Enregistrer" : "Ajouter"}
           </button>
         </div>
